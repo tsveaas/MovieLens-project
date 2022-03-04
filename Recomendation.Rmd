@@ -1,0 +1,753 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{rmd setup, include=FALSE}
+# RMarkdown settings
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=5, fig.height=2.5, fig.align="center") 
+knitr::opts_chunk$set(fig.pos = "H", out.extra = "")
+
+# required libraries
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(magrittr)) install.packages("magrittr", repos = "http://cran.us.r-project.org")
+if(!require(tinytex)) install.packages("tinytex", repos = "http://cran.us.r-project.org")
+library(tidyverse)
+library(knitr)
+library(magrittr)
+library(tinytex)
+
+```
+
+\vspace*{6cm}
+\begin{center}
+{\Large (HarvardX PH125.9x) \\ Data Science: Capstone }
+\end{center}
+\vspace*{1.5cm}
+\begin{center}
+\thispagestyle{empty}
+{\Huge \bf Capstone Project}\\[1.5cm]
+{\bf \Large Build a movie recommendation system}\\[1cm]
+{\Large February 2022}\\[1.5cm]
+{\large submitted by Tobias Sveaas} \\[2.5cm]
+\end{center}
+
+
+\newpage
+\tableofcontents
+\newpage
+
+# Introduction
+
+In this project we develop a recommendation system that predicts the rating a specific user will give a specific movie in terms of stars. The star rating system ranges from the lowest rating possible of 0.5 stars meaning the user would hate the movie to the highest possible rating of 5 stars meaning the user would love the movie.
+
+The data used in this project is the MovieLens 10m movie ratings data set which can be found here https://grouplens.org/datasets/movielens/10m/ . The data set contains 10 million movie ratings and 100,000 tag applications applied to 10,000 movies by 72,000 users. Released in 2009.
+
+The objective of this project is to train a model that achieves a Root Mean Squared Error (RMSE) below 0.86499 when predicting the movie ratings on the validation set. For this purpose a linear model was developed which attempts the convey the movie, user and genre specific effects on the rating. These effects were also regularized to account for the movies, users and genres with small sample sizes. Lastly matrix factorization was added on to account for the remaining variability in ratings . This model achieved an RMSE of .7946383 which fell well below the target value. 
+
+RMSE is a loss function that is defined as follows:
+
+$$ RMSE=\sqrt{\frac{1}{N}\sum_{u,i}(\hat{y}_{u,i}-y_{u,i})^2} $$
+
+Where N is the numbers of ratings, u,i is the rating given to the movie i by user u and y_{u,i} is the predicted rating from the model of movie i by user u. This will evaluate how close our predictions are to the observed ratings.
+
+## Load packages and libraries needed in the project
+
+First we install and load in the packages and libraries we will be using for the project
+
+```{r, include = FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(scales)) install.packages("scales", repos = "http://cran.us.r-project.org")
+if(!require(recosystem)) install.packages("recosystem", repos = "http://cran.us.r-project.org")
+```
+
+```{r libraries, results=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(caret)
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(lubridate)
+library(scales)
+library(recosystem)
+```
+
+\newpage
+# Data cleaning
+
+We load in the MovieLens data set and split it into two sets. The edx set (90% of the data) which will be used for the process of creating our model and the final validation set (10% of the data) that is used only for the final test of our chosen model.
+
+```{r, include = FALSE}
+#############################################################
+# 1. Create edx set, validation set (final hold-out test set)
+#############################################################
+
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+```
+
+# Data Exploration
+
+Exploratory analysis is done on the data set to get an overview of the main characteristics of the data set.
+
+First we will will examine the dimensions of the edx set
+
+```{r, echo=FALSE}
+# Dimensions of the edx data set
+knitr::kable(dim(edx))
+```
+
+The edx data set set contains 9,000,055 rows and 6 columns
+
+```{r, echo=FALSE}
+# head of edx set
+knitr::kable(head(edx))
+```
+
+The 6 variables in the data set are userId, movieId, rating, timestamp, title and genres
+
+```{r, echo=FALSE}
+knitr::kable(edx %>%
+  summarize(n_users = n_distinct(userId),
+            n_movies = n_distinct(movieId)))
+```
+
+There are 69,878 unique users and 10,677 unique movies in the data set
+
+```{r, echo=FALSE}
+# The number of distinct ratings and the range
+knitr::kable(edx %>%
+  summarize(distinct_ratings = n_distinct(rating),
+            rating_range = range(rating)))
+```
+
+There are 10 unique ratings that range from 0.5 to 5.0
+
+```{r, echo=FALSE}
+# Number of unique genres
+knitr::kable(edx %>%
+  summarize(distinct_genres = n_distinct(genres)))
+```
+
+There are 797 unique genres
+
+```{r, echo=FALSE}
+# Explore the genres
+knitr::kable(head(edx$genres))
+```
+
+There are so many unique genres because they consist of combinations of genres
+
+```{r, echo = FALSE}
+# The time span in which the ratings have taken place
+# Convert the time stamp and find the range
+edx <- edx %>% mutate(date = as_datetime(timestamp))
+year(max(edx$date)) - year(min(edx$date))
+```
+
+The ratings span over a period of 14 years
+
+\newpage
+# Data Analysis and Visualisation
+
+Here we further analyse the data through visualization to explore trends and patterns that may have an effect on the ratings of movies. To find out about which variables could be useful to use in our model
+
+## Movie Data
+
+Lets find out the mean ratings for each movie to see different movies have noticeably different ratings
+```{r, echo=FALSE}
+# Plot a histogram of rating distribution of movies
+edx %>% group_by(movieId) %>%
+  summarise(mean_rating = mean(rating)) %>% 
+  ggplot(aes(mean_rating)) +
+  geom_histogram(bins = 20, color = "white") +
+  ggtitle("Mean Ratings of Movies") +
+  xlab("Mean Rating") +
+  ylab("Number of Movies")  +
+  theme_stata()
+```
+
+We see that there is quite a spread in average rating per movie in that some movies are rated higher than others.
+
+Lets see the number of ratings per movie to see if each movie is rated a similar number of times
+
+```{r, echo=FALSE}
+# Plot a histogram of the number of ratings per movie
+edx %>% count(movieId) %>% ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "white") +
+  scale_x_log10() + 
+  ggtitle("Distribution of Movies") +
+  xlab("Number of Ratings") +
+  ylab("Number of Movies") +
+  theme_stata()
+```
+
+We see that there is a vast difference in the number of ratings per movie with some movies with over 10,000 ratings and some movies with under 10.
+
+Lets see for the extremes of the mean rating graph how many times the movies were rated to see if the variability can be explained partially due to a small amount of ratings.
+
+```{r, echo=FALSE}
+# Create a table with the number of ratings for the movies with the top 5 and bottom 5 mean rating
+knitr::kable(edx %>% group_by(title) %>% 
+  summarise(mean_rating = mean(rating), count = n()) %>%
+  slice_max(mean_rating, n = 5, with_ties = FALSE))
+
+knitr::kable(edx %>% group_by(title) %>% 
+  summarise(mean_rating = mean(rating), count = n()) %>%
+  slice_min(mean_rating, n = 5, with_ties = FALSE))
+```
+
+We do indeed see that the the top 5 and bottom 5 rated movies are very obscure movies with only 1 or 2 ratings. So when creating our model we will have to include regularization to account for the high variability of movies with less ratings.
+
+\newpage
+## User Data
+
+Lets find out if different users rate movies differently. As some may be be more favorable rating every movie highly and some may be critical rating every movie lower on average.
+
+First lets plot a histogram of average rating from different users
+
+```{r, echo=FALSE}
+# Plot a histogram of average rating from different users
+edx %>% group_by(userId) %>%
+  summarise(mean_rating = mean(rating)) %>% 
+  ggplot(aes(mean_rating)) +
+  geom_histogram(bins = 20, color = "white") +
+  ggtitle("Mean Ratings from users") +
+  xlab("Mean Rating") +
+  ylab("Number of Users") +
+  theme_stata()
+```
+
+We can see that although the spread is not a great as the effect different movies have there does still seem to be a noticeable difference in the average rating of each unique user that we can use to aid our prediction model.
+
+Lets see the number of ratings per user to see if each user have rated a similar number of movies
+
+```{r, echo=FALSE}
+edx %>% count(userId) %>% ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "white") +
+  scale_x_log10() + 
+  ggtitle("Distribution of Ratings per User") +
+  xlab("Number of Ratings") +
+  ylab("Number of Users") +
+  theme_stata()
+```
+
+We can see that the number of ratings from each user does vary quite a bit with some users having over 1000 ratings and some users having only around 20 ratings.
+
+Lets see if the extremes are from users who have given a low number of ratings similar to the movie data
+
+```{r, echo=FALSE}
+# Create a table with the number of ratings for the movies with the top 5 and bottom 5 mean rating
+knitr::kable(edx %>% group_by(userId) %>% 
+  summarise(mean_rating = mean(rating), count = n()) %>%
+  slice_max(mean_rating, n = 5, with_ties = FALSE))
+
+knitr::kable(edx %>% group_by(userId) %>% 
+  summarise(mean_rating = mean(rating), count = n()) %>%
+  slice_min(mean_rating, n = 5, with_ties = FALSE))
+```
+
+We can see that again the extreme values of the mean ratings per user are from the users who have given the least number of ratings. As there will be the highest amount of variability with the low sample size. So again regularization will have to be used when using user specific data for our prediction model.
+
+\newpage
+## Date of review data
+
+Lets find out if the date in which users have rated the movie has an effect on the rating given. As maybe people in general have become more favorable or critical over 14 year range.
+
+Lets observe the trend of the average rating over time rounded to the nearest week
+
+```{r, echo=FALSE, warning=FALSE}
+# Trend in average rating per week over time 
+edx %>% mutate(date = round_date(date, unit = "week")) %>%
+  group_by(date) %>%
+  summarise(mean_rating = mean(rating)) %>%
+  ggplot(aes(date,mean_rating)) +
+  geom_point() +
+  geom_smooth() +
+  ggtitle("Average Rating per over Time") +
+  theme_stata()
+```
+
+We can see a slight change in movie ratings over time but nothing significant enough to include in our model
+
+\newpage
+## Genres Data
+
+Lets see if 797 different genres have significantly different ratings
+
+```{r, echo=FALSE}
+# Plot a histogram of rating distribution of genres
+edx %>% group_by(genres) %>%
+  summarise(mean_rating = mean(rating)) %>% 
+  ggplot(aes(mean_rating)) +
+  geom_histogram(bins = 20, color = "white") +
+  ggtitle("Mean Ratings of Genres") +
+  xlab("Mean Rating") +
+  ylab("Number of Genres") +
+  theme_stata()
+```
+
+We can indeed see that there is quite a spread in the average rating of each genre
+
+Lets see the number of ratings per unique genres to see if each genre combination have a similar number of rating
+
+```{r, echo=FALSE}
+# Plot a histogram of the number of ratings per Genre
+edx %>% count(movieId) %>% ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "white") +
+  scale_x_log10() + 
+  ggtitle("Distribution of ratings per Genre") +
+  xlab("Number of Ratings") +
+  ylab("Number of Genres") +
+  theme_stata()
+```
+
+We can see that there is a vast difference in the number of ratings per genre with some genres having only 1-10 ratings and some having over 10,000 ratings
+
+Lets see if the extremes are from users who have given a low number of ratings similar to the movie data
+
+```{r, echo=FALSE}
+# Create a table with the number of ratings for the genres with the top 5 and bottom 5 mean rating
+knitr::kable(edx %>% group_by(genres) %>% 
+  summarise(mean_rating = mean(rating), count = n()) %>%
+  slice_max(mean_rating, n = 5, with_ties = FALSE))
+
+knitr::kable(edx %>% group_by(genres) %>% 
+  summarise(mean_rating = mean(rating), count = n()) %>%
+  slice_min(mean_rating, n = 5, with_ties = FALSE))
+```
+
+We can see that this time there is a mix between genres with few reviews and lots of reviews for the highest and lowest average rating genres. So to severe regularization may not be necessary.
+
+\newpage
+# Creating the Prediction Model
+
+First we further split our edx data set into a training set and test set which contain 90% and 10% of the edx data respectively while making sure that all the movieIds and UserIds in the test set are also in the train set.
+
+```{r, include = FALSE}
+# Create train set and test set for developing our model
+
+# Test set set will be 10% of edx data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)
+train_set <- edx[-test_index,]
+temp <- edx[test_index,]
+
+# Make sure movieId and userId in test set are also in train set
+test_set <- temp %>% 
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId")
+
+# Add rows removed from test set back into train set
+removed <- anti_join(temp, test_set)
+train_set <- rbind(train_set, removed)
+
+# RMSE function to test our models
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+The model we create is a simple linear model where we add in the effects of different classifiers
+
+## Mean
+
+We start by building the simplest possible recommendation system model where we predict all movies with the same rating regardless of the user explaining the differences between ratings with random variation. Defined as follows:
+
+$$ Y_{u,i} = \mu + \epsilon_{u,i} $$
+Where $Y_{u,i}$ is the is the predicted rating for movie ${i}$ from user ${u}$, $\mu$ is the mean rating of all movies in the train set with $\epsilon_{u,i}$ representing the independent errors sampled from the same distribution centered at $0$ and $\mu$
+
+When predicting all the the unknown ratings of the test set with the equation:
+
+$$ \hat{Y}_{u,i} = \hat\mu $$
+
+we obtain the following RMSE
+
+```{r, echo = FALSE}
+# Just the mean
+# Start model building by using the mean rating of all movies
+
+mu <- mean(train_set$rating)
+
+# Calulate RMSE and put into rmse results data frame
+
+mu_rmse <- RMSE(test_set$rating, mu)
+rmse_results <- data.frame(model = "Just mean", RMSE = mu_rmse)
+
+knitr::kable(rmse_results[1,])
+```
+The RMSE we obtain from this simple model is expectedly quite high
+
+\newpage
+## Movie Effect
+
+Next we add in an effect for different movies, as from the analysis we can see that different movies have vastly different ratings. So we augment the previous model by adding in a movie specific effect or movie bias with the term ($b_i$) which represent the average rating for movie $i$
+
+$$Y_{u,i} = \mu + b_i + \epsilon_{u,i}$$
+
+Additionally however we discovered in the analysis that the movies with the highest and lowest mean ratings were obscure movies with only 1-2 ratings each. So we add in regularization which penalizes large estimates of ($b_i$) from movies with small sample sizes to constrain the total variability caused. So the calculation for ($b_i$) is:
+
+$$\hat{b}_i(\lambda) = \frac{1}{\lambda + n_i} \sum^{n_i}_{u=1} (Y_{u,i} - \hat{\mu})$$
+Where ($n_i$) is the number of ratings made for movie $i$ and $\lambda$ is the penalty factor applied that reduces the movie bias ($b_i$) more for movies with small ($n_i$) than it does for movies with large ($n_i$). The optimal $\lambda$ value is chosen via cross validation minimizing the RMSE from the equation:
+
+$$ \hat{Y}_{u,i} = \hat\mu + \hat{b_i}$$
+```{r, include = FALSE}
+# Movie Bias
+# Add in a bias for average rating of each movie using regularization as well
+# find the best lambda value for regularization equation
+lambdas <- seq(0, 10, 0.25)
+
+# find best lambda value for movie bias
+rmses <- sapply(lambdas, function(l){
+ 
+  # creating bias for average movie rating
+  b_i <- train_set %>%
+    group_by(movieId) %>%
+    summarise(b_i = sum(rating - mu)/ (n() + l))
+  
+  # predict the ratings on the test_set
+  predicted_ratings <- test_set %>%
+    left_join(b_i, by = "movieId") %>%
+    mutate(pred = mu + b_i) %>%
+    .$pred
+  
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+
+# get the lambda value which returns the lowest rmse
+lambda_b_i <- lambdas[which.min(rmses)]
+```
+
+When inputting the optimal $\lambda$ obtained from cross validation we get the following RMSE from the model with the added movie effects. We reach a better RMSE of 0.942937
+
+```{r, echo = FALSE}
+# get the lambda value which returns the lowest rmse
+lambda_b_i <- lambdas[which.min(rmses)]
+
+# create movie bias using the lambda chosen
+b_i <- train_set %>%
+  group_by(movieId) %>%
+  summarise(b_i = sum(rating - mu)/ (n() + lambda_b_i))
+
+# add movie bias to train set
+train_set <- train_set %>%
+  left_join(b_i, by = "movieId")
+
+# find rmse with movie bias added
+# predict the ratings on the test_set
+rmse_movie <- test_set %>%
+  left_join(b_i, by = "movieId") %>%
+  mutate(pred = mu + b_i) %>%
+  summarize(rmse = RMSE(pred, rating)) %>%
+  pull(rmse)
+
+# add the rmse of the of the model which includes movie bias to the table
+rmse_results <- rmse_results %>%
+  add_row(model = "Movie bias", RMSE = rmse_movie)
+
+knitr::kable(rmse_results[1:2,])
+```
+
+\newpage
+## User Effects
+
+Next we add in an effect in ratings from users to account for more of the remaining variability as we have seen that there is also substantial variability in ratings across different users whereby some users rate movies higher on average and some rate movies lower on average. So a similar method will be used when adding the movie effect whereby:
+
+$$Y_{u,i} = \mu + b_i + b_u + \epsilon_{u,i}$$
+Where ($b_u$) is a user specific effect added
+
+Again we will add in regularization for the ($b_u$) effect as we saw a similar phenomenon of the extreme user rating averages being from users with the least amount of ratings. So:
+
+$$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_u} \sum^{n_u}_{u=1} (Y_{u,i} - \hat{\mu} - \hat{b_i})$$
+
+After using cross validation again to find the optimal $\lambda$ we use to equation:
+
+```{r, include = FALSE}
+# User Bias
+# find best lambda value for user bias
+rmses <- sapply(lambdas, function(l){
+ 
+   # create bias for user rating
+  b_u <- train_set %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n() + l))
+  
+  # predict the ratings on the test_set
+  predicted_ratings <- test_set %>%
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+
+lambda_b_u <- lambdas[which.min(rmses)]
+```
+
+$$ \hat{Y}_{u,i} = \hat\mu + \hat{b_i} + \hat{b_u}$$
+To predict the test set and get a RMSE value of 0.8641744 which is another substantial improvement
+
+```{r, echo = FALSE}
+# create user bias using the lambda chosen
+b_u <- train_set %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n() + lambda_b_u))
+
+# add user bias to train set
+train_set <- train_set %>%
+  left_join(b_u, by = "userId")
+
+# find rmse with both user bias and movie bias added
+# predict the ratings on the test_set
+rmse_movie_user <- test_set %>%
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  summarize(rmse = RMSE(pred, rating)) %>%
+  pull(rmse)
+
+# add the rmse of the of the model which includes movie and user bias to the table
+rmse_results <- rmse_results %>%
+  add_row(model = "Movie + User bias", RMSE = rmse_movie_user)
+
+knitr::kable(rmse_results[1:3,])
+```
+\newpage
+
+## Genre effect
+
+Next we will add in the effect different genres may to see if that accounts for more of the unexplained variability. As from our analysis we have seen that there is a significant spread in the average ratings of genres. We will add the genre effect($b_g$) to our equation:
+
+
+$$Y_{u,i} = \mu + b_i + b_u + b_g + \epsilon_{u,i}$$
+
+Again we will add in regulization again using cross validation to find our lambda values even though from analysis it didn't seem as neccasary as for the previous effects.
+
+$$\hat{b}_g(\lambda) = \frac{1}{\lambda + n_g} \sum^{n_g}_{u=1} (Y_{u,i} - \hat{\mu} - \hat{b_i})$$
+
+After using cross validation again to find the optimal $\lambda$ we use to equation:
+
+```{r, include = FALSE}
+# Genres bias
+# find best lambda value for genres bias
+rmses <- sapply(lambdas, function(l){
+  
+  # create bias for user rating
+  b_g <- train_set %>%
+    group_by(genres) %>%
+    summarize(b_g = sum(rating - b_i - b_u - mu)/(n() + l))
+  
+  # predict the ratings on the test_set
+  predicted_ratings <- test_set %>%
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_g, by = "genres") %>%
+    mutate(pred = mu + b_i + b_u + b_g) %>%
+    .$pred
+  
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+
+lambda_b_g <- lambdas[which.min(rmses)]
+```
+
+$$ \hat{Y}_{u,i} = \hat\mu + \hat{b_i} +\hat{b_u} + \hat{b_g}$$
+To predict our test set which results in a new RMSE of .08638564, which is only a very neglible improvement
+
+```{r, echo = FALSE}
+# create genres bias without regularization
+b_g <- train_set %>%
+  group_by(genres) %>%
+  summarize(b_g = sum(rating - b_i - b_u - mu)/n())
+
+# add genres bias to train set
+train_set <- train_set %>%
+  left_join(b_g, by = "genres")
+
+# find rmse with user bias, movie bias and genres added
+# predict the ratings on the test_set
+rmse_movie_user_genres <- test_set %>%
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_g, by = "genres") %>%
+  mutate(pred = mu + b_i + b_u + b_g) %>%
+  summarize(rmse = RMSE(pred, rating)) %>%
+  pull(rmse)
+
+# add the rmse of the of the model which includes movie and user bias to the table
+rmse_results <- rmse_results %>%
+  add_row(model = "Movie + User + Genres bias", RMSE = rmse_movie_user_genres)
+
+knitr::kable(rmse_results[1:4,])
+```
+
+\newpage
+To Visualize why this is we look at the histograms for the effect values ($b_i$, $b_u$, $b_g$)
+
+```{r, echo = FALSE, warning=FALSE}
+# Compare the different bias'
+ train_set %>% select(b_i, b_u, b_g) %>%
+   gather(key = "bias" , value = "value") %>%
+   ggplot(aes(value)) +
+   geom_histogram(bins=30) +
+   xlim(-2,2) +
+   facet_grid(~factor(bias, levels = c('b_i', 'b_u', 'b_g'))) +
+   scale_y_continuous(labels = comma) +
+   xlab("Bias Amount") +
+   ylab("Count")
+```
+
+We can see that the movie bias and user bias have a substantial effect on the variability between ratings while the genre bias has very little effect with values very close $0$. This is likely due to the movie and user bias already explaining nearly all of the variability between average ratings between genres and as such we will not include a genre effect as part of our model.
+
+\newpage
+## Matrix Facorisation
+
+Matrix factorization is now used to factor in the similar rating patterns that both certain groups of movies and certain groups of users share. As currently the model only pays attention to the fact that both individual movies and individual users have similar rating patterns. The idea is that users who like "The Godfather" more than the current model predicted will also like "The Godfather, Part II" more than the model will predict. Or That users who rate horror movies higher than expected may rate romantic comedy movies lower than expected.
+ 
+We use matrix factorization by first centering the data to leave only the remaining variation $r_{u,i}$:
+
+$$ r_{u,i} = y_{u,i} - \hat\mu  - \hat{b_i} - \hat{b_u}$$
+```{r}
+# Center the data to leave only the remaining variation by removing mu, movie bias and user bias'
+train_set <- train_set %>% mutate(residual = rating - mu - b_i - b_u)
+```
+
+Then estimating a matrix of residuals where each user gets a row and each column gets a rating. Where $y_{u,i}$is the entry for row u and column i.
+
+The model factorizes the matrix r into a vector P and vector Q, where P is user rating score and Q is movies rating score matrix.
+
+$${r} \approx {PQ'}$$
+
+We use the Recommender system package (recosystem) in R to estimate the residuals matrix $$ r_{u,i} $$ by the product of the two matrices of lower division $P_nk$ and $Q_nk$
+
+First we create the recosystem object Reco() using the userId, movieId and the residual
+
+```{r}
+# Create recosystem
+r <- Reco()
+train_reco <- data_memory(user_index = train_set$userId, item_index = train_set$movieId, rating = train_set$residual,index1 = TRUE)
+```
+
+Then we tune the model using $tune() to find the best tuning parameters. Default tuning parameters are used except to save computation time  L1 parameters were ignored as L1 loss minimizes linearly whereas L2 loss minimizes the sum of squares which is what the overall goal is.
+
+```{r, results = 'hide'}
+# Tune the recosystem model
+# This part includes multithreading using 6 thread son my PC
+# Change "nthread" if you do not have enough
+reco_tune <- r$tune(train_reco, opts = list(dim      = c(10L, 20L),
+                                            costp_l1 = 0,
+                                            costp_l2 = c(0.01, 0.1),
+                                            costq_l1 = 0,
+                                            costq_l2 = c(0.01, 0.1),
+                                            lrate    = c(0.01, 0.1),
+                                            niter = 10,
+                                            nthreads = 6,
+                                            verbose = TRUE))
+```
+
+Then we train the model using the best possible tune conducting 50 iterations
+
+```{r, results = 'hide'}
+# Train the recosystem model using optimal tune
+r$train(train_reco, opts = c(reco_tune$min, niter = 50)) 
+```
+
+Then export the model using $output()
+
+```{r}
+# Export model
+reco_mat <- r$output(out_P = out_memory(), out_Q = out_memory())
+```
+
+Finally use $predict() to predict the train set and RMSE using the equation:
+
+$$ \hat{Y}_{u,i} = \hat\mu + \hat{b_i} +\hat{b_u} + \hat{r_u,i}$$
+```{r}
+# Use recosystem model to predict test set
+test_reco <- data_memory(user_index = test_set$userId, item_index = test_set$movieId, index1 = TRUE)
+test_residual_pred <- r$predict(test_reco, out_memory())
+rmse_mat_fact <- test_set %>%
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u + test_residual_pred) %>%
+  summarize(rmse = RMSE(pred, rating)) %>%
+  pull(rmse)
+
+# Add the rmse of the of the model which includes matrix factorization
+rmse_results <- rmse_results %>%
+  add_row(model = "Matrix Factorisation", RMSE = rmse_mat_fact)
+
+knitr::kable(rmse_results[1:5,])
+```
+
+This inclusion of matrix factorization to our model gives us an RMSE of 0.7943294 which is well under our target RMSE of 0.86490
+
+\newpage
+# Results
+
+After determining the combined linear model + matrix factorization created from the edx data set is adequate. We apply this model to the validation data set for the final test we we get an RMSE of 0.7946383, which is also well under our target RMSE of 0.86490 acheiving the goal of this project.
+
+```{r}
+# Use final model on the validation set
+valid_reco <- data_memory(user_index = validation$userId, item_index = validation$movieId, index1 = TRUE)
+valid_residual_pred <- r$predict(valid_reco, out_memory())
+rmse_valid <- validation %>%
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u + valid_residual_pred) %>%
+  summarize(rmse = RMSE(pred, rating)) %>%
+  pull(rmse)
+```
+
+# Conclusion
+
+The model described in this report successfully predicts movie ratings in the 10M MovieLens data set with an RMSE of 0.7946383 which is significantly below the target RMSE of 0.86490. The final model uses a combination of linear modelling of the general quality of the movie, general disposition of the user and then matrix factorization to account for the remaining residuals.
+
+Some limitations to this model are that it is not possible to make predictions for movies and users which have never been accounted for in the training data and would have to be altered to work for new users and movies.
+
+Another limitation is that the matrix factorization aspect of the model is not that interpretable as all the different groupings aren't displayed.
+
+Some aspects that could be looked into further are exploring any extra biases that may be apparent that could be factored into the linear model, such as date the movie came out or time from the first review as people who really like a movie may rush to rate it. Also more parameters could be added to the matrix factorization tuning with more computation power to get a more optimal model.
