@@ -1,4 +1,5 @@
 # MovieLens-project
+Data Science: Capstone (HarvardX PH125.9x)
 
 In this project we develop a recommendation system that predicts the rating a specific user will give a specific movie in terms of stars. The star rating system ranges from the lowest rating possible of 0.5 stars meaning the user would hate the movie to the highest possible rating of 5 stars meaning the user would love the movie.
 
